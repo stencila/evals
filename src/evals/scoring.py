@@ -71,7 +71,6 @@ class ScoreRecordList(RootModel):
 
 
 def calculate_geometric_means(df: pl.DataFrame, cols: Iterable[str]) -> pl.DataFrame:
-    group_by = "category"
     cols = list(cols)
 
     def geom_mean(row: tuple[float]):
@@ -88,22 +87,8 @@ def calculate_geometric_means(df: pl.DataFrame, cols: Iterable[str]) -> pl.DataF
         ]
     )
 
-    df_by_category = df.group_by(group_by).map_groups(
-        lambda group: group.with_columns(
-            [
-                pl.struct(cols)
-                .map_elements(
-                    lambda x: geom_mean(tuple(x.values())), return_dtype=pl.Float64
-                )
-                .alias("geometric_avg_rank_by_category")
-            ]
-        )
-    )
-
     overall = df_overall.get_column("geometric_avg_rank")
-    by_category = df_by_category.get_column("geometric_avg_rank_by_category")
-
-    df = df.with_columns([overall, by_category])
+    df = df.with_columns([overall])
 
     return df
 
@@ -112,7 +97,7 @@ def rank_by_category(df: pl.DataFrame) -> pl.DataFrame:
     quality_ranked = (
         pl.col("quality")
         .rank(method="min", descending=True)
-        .over("category")
+        # .over("category") # TODO: quality context
         .alias("quality_rank")
     )
 
@@ -148,23 +133,39 @@ def calculate_percentiles(scores: List[float], invert_scores = False) -> np.ndar
     return percentiles
 
 def generate_scores() -> ScoreRecordList:
+    def report_missing(quality, cost, speed):
+        missing = []
+        if quality is None:
+            missing.append("quality")
+        if cost is None:
+            missing.append("cost")
+        if speed is None:
+            missing.append("speed")
+
+        if len(missing) > 0:
+            part_1 = f"{model} is missing metric"
+            match len(missing):
+                case 1: part_2 = f": {missing[0]}."
+                case 2: part_2 = f"s: {missing[0]} and {missing[1]}."
+                case _: part_2 = f"s: {(', ').join(missing[0:-1])} and {missing[-1]}."
+            logger.info(part_1 + part_2)
+
     mm = ModelMapper.load()
     results = [bm.get_benchmarks(mm) for bm in all_benchmarks().values()]
     q_unit, quality_scores = get_scores_like(results, BenchmarkType.QUALITY)
     c_unit, cost_scores = get_scores_like(results, BenchmarkType.COST)
     s_unit, speed_scores = get_scores_like(results, BenchmarkType.SPEED)
 
-    contexts = set()
+    quality_contexts = set(["overall"])
     data_by_model = defaultdict(dict)
 
     for score in quality_scores:
-        # https://github.com/lm-sys/FastChat/blob/03d376ccb5048bcbaa49b24064a3534514a42faf/fastchat/serve/monitor/monitor_md.py#L55
+        # We know that full == overall from https://github.com/lm-sys/FastChat/blob/03d376ccb5048bcbaa49b24064a3534514a42faf/fastchat/serve/monitor/monitor_md.py#L55
         if score.context == "full":
-            score.context = "overall"
+            data_by_model[score.model][f"quality"] = score.score
         else:
             # TODO: skip these at a different place
             continue
-        data_by_model[score.model][f"quality_{score.context}"] = score.score
 
     for score in cost_scores:
         # TODO: cost context
@@ -174,7 +175,7 @@ def generate_scores() -> ScoreRecordList:
         # TODO: speed context, e.g. hosting provider
         data_by_model[score.model]["speed"] = score.score
 
-    metrics = [f"quality_{context}" for context in contexts] + ["speed", "cost"]
+    metrics = ["quality", "speed", "cost"]
     for metric in metrics:
         invert_scores = metric == "cost"
         model_names = []
@@ -193,8 +194,8 @@ def generate_scores() -> ScoreRecordList:
 
     score_records = []
     for model, data in data_by_model.items():
-        for context in contexts:
-            quality = data.get(f"quality_{context}")
+        for context in quality_contexts:
+            quality = data.get(f"quality")
             cost = data.get("cost")
             speed = data.get("speed")
 
@@ -282,7 +283,7 @@ def main():
     symlink(home / f"scoring-{today()}.json", prefix="scoring")
     symlink(home / f"scoring-{today()}.parquet", prefix="scoring")
 
-    print(df)
+    logger.debug(df)
 
 
 if __name__ == "__main__":
