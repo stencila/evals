@@ -679,7 +679,7 @@
   "openrouter/cognitivecomputations/dolphin-mixtral-8x7b [litellm]": null,
   "openrouter/cohere/command-r-plus [litellm]": null,
   "openrouter/databricks/dbrx-instruct [litellm]": null,
-  "openrouter/deepseek/deepseek-chat [litellm]": "deepseek-coder",
+  "openrouter/deepseek/deepseek-chat [litellm]": "deepseek-chat",
   "openrouter/deepseek/deepseek-coder [litellm]": "deepseek-coder",
   "openrouter/deepseek/deepseek-r1 [litellm]": "deepseek-r1",
   "openrouter/fireworks/firellava-13b [litellm]": null,
