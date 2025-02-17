@@ -1,0 +1,403 @@
+---
+title: 'Exploring the LLM evaluation frontier: how we produce it'
+---
+
+Stencila Cloud's model router provides you with the "best" model for your input.
+This document describes how that's achieved.
+
+It does this by analyzing the outputs of various benchmarking services to
+produce normalized scores for quality, speed and cost.
+
+## Speed
+
+This section describes how the speed scores are distributed across models.
+
+## Starting point
+
+The repository that performs this analysis is available on GitHub at [github.com/stencila/evals](https://github.com/stencila/evals).
+
+```python exec
+import pandas as pd
+
+minidf = pd.DataFrame({
+    'c1': [True, False],
+    'c2': [1, 2],
+    'c3': [1.23, 4.56],
+    'c4': ['One', 'Two']
+})
+
+minidf
+```
+
+```
+% \f is defined as #1f(#2) using the macro
+\f\relax{x} = \int_{-\infty}^\infty
+    \f\hat\xi\,e^{2 \pi i \xi x}
+    \,d\xi
+```
+
+```python exec
+# setting up
+import pandas as pd
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+incomplete_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
+```
+
+```python exec fork
+# Display basic information about both dataframes
+print("DataFrame 'df':")
+print(f"Shape: {df.shape}")
+print(f"Number of null values:\n{df.isnull().sum()}\n")
+
+print("DataFrame 'incomplete_df':")
+print(f"Shape: {incomplete_df.shape}")
+print(f"Number of null values:\n{incomplete_df.isnull().sum()}")
+```
+
+```python
+model_names = incomplete_df["model"].unique()
+column_names = incomplete_df.columns.tolist()
+print(sorted(column_names))
+```
+
+```python exec
+model_names = incomplete_df["model"].unique()
+column_names = incomplete_df.columns.tolist()
+print(sorted(column_names))
+```
+
+
+::: for dataframe in ["df", "incomplete_df"]
+
+Hello there {{dataframe}}.
+
+:::
+
+-->
+
+## Discussion of the two datasets
+
+The dataframe `df` contains those models for which we have data on all three
+metrics, while `incomplete_df` also includes incomplete data for some models.
+The incomplete data may be due to missing values in the original data or other
+issues. We will focus on the complete data for now.
+
+Percentiles relate to an individual metric. Therefore, within the "complete"
+dataset, e.g. `df`, none of the models reach the 100th percentile. This is
+because the percentiles are calculated relative to the other models in the
+larger dataset, `incomplete_df`.
+
+## Exploratory data analysis
+
+### Quality metric
+
+::: figure
+
+Distribution of performance metrics across quality, speed, and cost dimensions, shown in three separate subplots to highlight the characteristics of each metric.
+
+```python exec
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Create a figure with 3 subplots
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+
+# Plot quality distribution
+sns.violinplot(y=df["quality"], ax=ax1, color="lightblue")
+ax1.set_title("Quality")
+ax1.set_ylabel("Score")
+
+# Plot speed distribution
+sns.violinplot(y=df["speed"], ax=ax2, color="lightgreen")
+ax2.set_title("Speed")
+ax2.set_ylabel("Score")
+
+# Plot cost distribution
+sns.violinplot(y=df["cost"], ax=ax3, color="salmon")
+ax3.set_title("Cost")
+ax3.set_ylabel("Score")
+
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+::: figure
+
+Distribution of performance metrics across quality, speed, and cost dimensions, shown in three separate subplots to highlight the characteristics of each metric.
+
+```python exec
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import stats
+
+# Create a figure with 3 subplots
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+
+def plot_boxplot_with_outliers(data, ax, color, title):
+    # Calculate quartiles and IQR
+    Q1 = data.quantile(0.25)
+    Q3 = data.quantile(0.75)
+    IQR = Q3 - Q1
+
+    # Define outlier thresholds using 1.5 * IQR rule
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+
+    # Identify outliers using z-score and IQR methods
+    z_scores = np.abs(stats.zscore(data))
+    z_score_outliers = data[z_scores > 3]  # Points > 3 standard deviations
+    iqr_outliers = data[(data < lower_bound) | (data > upper_bound)]
+
+    # Take intersection of both methods for robust outlier detection
+    outliers = z_score_outliers.intersection(iqr_outliers)
+
+    # Create box plot
+    bp = ax.boxplot(data, patch_artist=True)
+
+    # Customize box plot colors
+    plt.setp(bp['boxes'], facecolor=color, alpha=0.7)
+    plt.setp(bp['medians'], color='black')
+
+    # Plot outliers separately with red markers
+    if not outliers.empty:
+        ax.plot([1] * len(outliers), outliers, 'ro', label='Outliers')
+
+    ax.set_title(title)
+    ax.set_ylabel("Score")
+
+# Plot distributions with outlier detection
+plot_boxplot_with_outliers(df["quality"], ax1, "lightblue", "Quality")
+plot_boxplot_with_outliers(df["speed"], ax2, "lightgreen", "Speed")
+plot_boxplot_with_outliers(df["cost"], ax3, "salmon", "Cost")
+plt.tight_layout()
+plt.show()
+
+# Print summary of outliers for each metric
+for metric in ["quality", "speed", "cost"]:
+    data = df[metric]
+    Q1 = data.quantile(0.25)
+    Q3 = data.quantile(0.75)
+    IQR = Q3 - Q1
+    z_scores = np.abs(stats.zscore(data))
+
+    # Get outliers using both methods
+    z_score_outliers = data[z_scores > 3]
+    iqr_outliers = data[(data < (Q1 - 1.5 * IQR)) | (data > (Q3 + 1.5 * IQR))]
+    robust_outliers = z_score_outliers.intersection(iqr_outliers)
+
+    print(f"\n{metric.capitalize()} metric:")
+    print(f"Number of outliers detected: {len(robust_outliers)}")
+    if len(robust_outliers) > 0:
+        print("Outlier values:", robust_outliers.values)
+```
+
+:::
+
+### Misc
+
+::: figure
+
+Comparison of quality, cost and speed percentiles across different models, showing relative performance in each dimension.
+
+```python exec
+import matplotlib.pyplot as plt
+import numpy as np
+
+fig, ax = plt.subplots(figsize=(12, 6))
+
+x = np.arange(len(model_names))
+width = 0.25
+
+quality_means = [
+    df[df["model"] == model]["quality_pct"].mean() for model in model_names
+]
+cost_means = [df[df["model"] == model]["cost_pct"].mean() for model in model_names]
+speed_means = [df[df["model"] == model]["speed_pct"].mean() for model in model_names]
+
+ax.bar(x - width, quality_means, width, label="Quality", color="steelblue")
+ax.bar(x, cost_means, width, label="Cost", color="lightcoral")
+ax.bar(x + width, speed_means, width, label="Speed", color="mediumseagreen")
+
+ax.set_xticks(x)
+ax.set_xticklabels(model_names, rotation=45, ha="right")
+ax.set_ylabel("Percentile")
+ax.legend()
+
+plt.tight_layout()
+```
+
+:::
+
+::: figure
+
+Mean percentile rankings across quality, cost and speed for each model, showing overall performance from highest ranked (left) to lowest ranked (right).
+
+```python exec
+import pandas as pd
+import plotly.express as px
+
+# Calculate mean percentile for each model
+model_means = (
+    df.groupby("model")
+    .agg({"quality_pct": "mean", "cost_pct": "mean", "speed_pct": "mean"})
+    .mean(axis=1)
+)
+
+# Sort models by mean percentile
+model_order = model_means.sort_values(ascending=False).index
+
+# Create long format data
+df_long = pd.melt(
+    df,
+    id_vars=["model"],
+    value_vars=["quality_pct", "cost_pct", "speed_pct"],
+    var_name="metric",
+    value_name="percentile",
+)
+
+# Create the visualization
+fig = px.bar(
+    df_long,
+    x="model",
+    y="percentile",
+    color="metric",
+    title=None,
+    barmode="group",
+    category_orders={"model": model_order},
+    labels={"model": "Model", "percentile": "Percentile", "metric": "Metric"},
+    color_discrete_map={
+        "quality_pct": "#1f77b4",
+        "cost_pct": "#ff7f0e",
+        "speed_pct": "#2ca02c",
+    },
+)
+
+fig.update_layout(
+    xaxis_tickangle=45, legend_title=None, showlegend=True, width=1000, height=500
+)
+
+fig.show()
+```
+
+:::
+
+::: figure
+
+Relationship between cost and quality percentiles across different models, where each point represents an evaluation.
+
+```python exec
+import plotly.express as px
+
+fig = px.scatter(df, x="quality_pct", y="cost_pct", hover_data=["model"], color="model")
+fig.update_layout(xaxis_title="Quality Percentile", yaxis_title="Cost Percentile")
+fig.show()
+```
+
+:::
+
+::: figure
+
+Model cost versus quality percentiles, with points colored by model family (e.g., Claude, GPT, Gemini).
+
+```python exec
+import plotly.express as px
+
+# Extract model family (first word before hyphen/dash)
+df["model_family"] = df["model"].str.split("-").str[0]
+
+fig = px.scatter(
+    df,
+    x="quality_pct",
+    y="cost_pct",
+    color="model_family",
+    hover_data=["model"],
+    labels={
+        "quality_pct": "Quality Percentile",
+        "cost_pct": "Cost Percentile",
+        "model_family": "Model Family",
+    },
+)
+
+fig.show()
+```
+
+:::
+
+::: figure
+
+Model cost versus quality percentiles with trend lines by model family, showing the relationship between cost and quality across different model providers.
+
+```python exec
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy import stats
+
+# Create base scatter plot
+fig = px.scatter(
+    df,
+    x="quality_pct",
+    y="cost_pct",
+    color=df["model"].str.split("-").str[0],
+    color_discrete_sequence=px.colors.qualitative.Set1,
+    labels={"quality_pct": "Quality Percentile", "cost_pct": "Cost Percentile"},
+)
+
+# Add trend lines for each model family
+for model_family in df["model"].str.split("-").str[0].unique():
+    mask = df["model"].str.startswith(model_family)
+    x = df[mask]["quality_pct"]
+    y = df[mask]["cost_pct"]
+
+    if len(x) > 1:  # Only add trend line if there are at least 2 points
+        slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+        line_x = np.array([min(x), max(x)])
+        line_y = slope * line_x + intercept
+
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_y,
+                mode="lines",
+                name=f"{model_family} trend",
+                line=dict(dash="dash"),
+                showlegend=True,
+            )
+        )
+
+# Update legend title
+fig.update_layout(legend_title_text="Model Family")
+
+fig.show()
+```
+
+:::
+
+## Reconciling identifiers between systems
+
+At times, services use unversioned model identifiers. This allows the service to
+quantify the performance of a model family across different versions. However,
+that's a problem for Stencila'a approach as it treats every model as a separate
+entity.
+
+To address this, we map the unversioned identifiers to versioned ones in some cases.
+
+Within the `model-id-mapping.json` file, we have entries like the following:
+
+```json
+  "gemini-pro [litellm]": "gemini-1.5-pro-001",`
+  "gemini-pro [lmarena]": "gemini-1.5-pro-001",
+  "gemini-pro [thefastestai]": "gemini-1.5-pro-001",
+```
+
+Creating a paragraph so that it's easy to find this again.
+
+## How to help
+
+This is an open source project and we welcome contributions. Here are a few suggestions:
+
+- Suggest any additional data sources for informing quality, speed, and cost metrics.
+- Expand our mapping of model identifiers. Check the file `tables/model-id-mapping.json` for how this is currently done.

@@ -1,23 +1,379 @@
+---
+title: 'Exploring the LLM Pareto frontier of quality, cost and speed'
+---
+
+Stencila Cloud's model router provides you with the "best" model for your input.
+It does this by analyzing the outputs of various benchmarking services to
+produce normalized scores for quality, speed and cost.
+This document describes how that's achieved.
+
+## Data sources
+
+Stencila makes use of publicly-available, open access data sets to evaluate the
+models that are available to its users:
+
+| Metric  | Data source                               | Provider                         |
+| ------- | ----------------------------------------- | -------------------------------- |
+| Quality | Elo rating system                         | Chatbot Arena (previously LMSYS) |
+| Speed   | Throughput, measured as tokens per second | Thefastest.ai                    |
+| Cost    | Publicly-available pricing data           | LiteLLM                          |
+
+
+::: table
+
+Model scores of each metric.
+
+| Metric  | Data source                               | Provider                         |
+| ------- | ----------------------------------------- | -------------------------------- |
+| Quality | Elo rating system                         | Chatbot Arena (previously LMSYS) |
+| Speed   | Throughput, measured as tokens per second | Thefastest.ai                    |
+| Cost    | Publicly-available pricing data           | LiteLLM                          |
+
+:::
+
 ```python exec
-import polars as pl
-df = pl.read_parquet("../data/routing/scoring.parquet")
-```
+# setting up
 
-::: create plot the polars dataframe using matplotlib >>>
-
-::::: figure
-
-Quality, cost and speed metrics from the routing evaluation, with each point representing a different model and category combination.
-
-```python exec
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.scatter(df['quality'], df['cost'], c=df['speed'], cmap='viridis')
-ax.set_xlabel('Quality Score')
-ax.set_ylabel('Cost Score')
-ax.grid(True, alpha=0.3)
-plt.colorbar(ax.collections[0], label='Speed Score')
+df = pd.read_parquet("../data/routing/scoring.parquet")
+all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
 ```
 
-:::::
+```python exec
+df.info()
+```
+
+Model names:
+
+```python exec
+model_names = df["model"].unique()
+```
+
+# Speed
+
+# Quality
+
+Quality scores are fairly well balanced, as shown in the histogram below.
+
+::: figure
+
+Distribution of quality scores across models, showing the spread and central tendency of model performance.
+
+```python exec
+plt.figure(figsize=(10, 6))
+plt.hist(df['quality'], bins=14, color='steelblue', edgecolor='black')
+plt.xlabel('Quality Score')
+plt.ylabel('Number of Models')
+plt.grid(True, alpha=0.3)
+plt.axvline(df['quality'].mean(), color='red', linestyle='--', alpha=0.8)
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+::: table
+
+Statistical tests for normality of quality scores distribution.
+
+```python exec
+from scipy import stats
+
+# Perform normality tests
+shapiro_stat, shapiro_p = stats.shapiro(df['quality'])
+anderson_result = stats.anderson(df['quality'], dist='norm')
+ks_stat, ks_p = stats.kstest(df['quality'], 'norm', args=(df['quality'].mean(), df['quality'].std()))
+
+# Create results dataframe
+pd.DataFrame({
+    'Test': ['Shapiro-Wilk', 'Anderson-Darling', 'Kolmogorov-Smirnov'],
+    'Statistic': [shapiro_stat, anderson_result.statistic, ks_stat],
+    'p-value': [shapiro_p, np.nan, ks_p]
+}).round(3)
+```
+
+:::
+
+::: create @code-chunk [anthropic/claude-3-5-sonnet-20241022] use statistical tests to evaluate how well the quality metric in the df dataframe matches a normal distribution >>>
+
+```python exec
+# Import scipy for statistical tests
+from scipy import stats
+
+# Calculate basic statistics for quality scores
+quality_scores = df['quality']
+mean = quality_scores.mean()
+std = quality_scores.std()
+
+# Run Shapiro-Wilk test for normality
+shapiro_stat, shapiro_p = stats.shapiro(quality_scores)
+
+# Run Anderson-Darling test for normality
+anderson_result = stats.anderson(quality_scores, dist='norm')
+
+# Run QQ plot
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+# Histogram with normal curve overlay
+hist_kwargs = dict(bins=10, density=True, alpha=0.7)
+ax1.hist(quality_scores, **hist_kwargs)
+x = np.linspace(min(quality_scores), max(quality_scores), 100)
+ax1.plot(x, stats.norm.pdf(x, mean, std), 'r-', lw=2, 
+         label=f'Normal\nμ={mean:.1f}\nσ={std:.1f}')
+ax1.set_title('Histogram with Normal Curve')
+ax1.legend()
+
+# QQ plot
+stats.probplot(quality_scores, dist="norm", plot=ax2)
+ax2.set_title('Q-Q Plot')
+
+plt.tight_layout()
+plt.show()
+
+# Print test results
+print("\nShapiro-Wilk test:")
+print(f"Statistic: {shapiro_stat:.3f}")
+print(f"p-value: {shapiro_p:.3f}")
+
+print("\nAnderson-Darling test:")
+print(f"Statistic: {anderson_result.statistic:.3f}")
+print("Critical values:", anderson_result.critical_values)
+print("Significance levels:", anderson_result.significance_level)
+```
+
+::: create [anthropic/claude-3-5-sonnet-20241022] plot the dataframe df using matplotlib to illustrate the pareto frontier of the quality_pct, cost_pct and speed_pct values >>>
+
+::: figure
+
+Trade-offs between quality, cost, and speed percentiles across models, with points forming a Pareto frontier surface.
+
+```python exec
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+scatter = ax.scatter(df['quality_pct'],
+                    df['cost_pct'],
+                    df['speed_pct'],
+                    c=df['quality_pct'] + df['cost_pct'] + df['speed_pct'],
+                    cmap='viridis')
+
+ax.set_xlabel('Quality %')
+ax.set_ylabel('Cost %')
+ax.set_zlabel('Speed %')
+
+plt.colorbar(scatter)
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+::: create [stencila/router] plot the dataframe df using matplotlib to demonstrate the distributions of the quality_pct, cost_pct and speed_pct columns >>>
+
+::: figure
+
+Distribution of quality, cost, and speed percentile scores across models.
+
+```python exec
+fig, ax = plt.subplots(figsize=(10, 6))
+
+plt.boxplot([df['quality_pct'], df['cost_pct'], df['speed_pct']], 
+            labels=['Quality', 'Cost', 'Speed'])
+plt.ylabel('Percentile')
+plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+plt.show()
+```
+
+:::
+
+# Distribution of metrics
+
+::: create @code-chunk [anthropic/claude-3-5-sonnet-20241022] write code to calculate a best fit model of the quality_pct, cost_pct and speed_pct while minimising error. use only pandas and numpy, rather than relying on other packages sklearn. >>>
+
+```python exec
+# Create array of predictor variables (cost_pct, speed_pct) and target (quality_pct)
+X = df[['cost_pct', 'speed_pct']].values
+y = df['quality_pct'].values
+
+# Add column of 1s for intercept term
+X = np.column_stack([np.ones(len(X)), X])
+
+# Calculate coefficients using normal equation: beta = (X'X)^-1 X'y
+beta = np.linalg.inv(X.T @ X) @ X.T @ y
+
+# Calculate predicted values
+y_pred = X @ beta
+
+# Calculate error metrics
+mse = np.mean((y - y_pred) ** 2)
+rmse = np.sqrt(mse)
+r2 = 1 - np.sum((y - y_pred) ** 2) / np.sum((y - np.mean(y)) ** 2)
+
+# Print results
+print("Model coefficients:")
+print(f"Intercept: {beta[0]:.4f}")
+print(f"Cost coefficient: {beta[1]:.4f}") 
+print(f"Speed coefficient: {beta[2]:.4f}")
+print("\nModel performance:")
+print(f"MSE: {mse:.4f}")
+print(f"RMSE: {rmse:.4f}")
+print(f"R-squared: {r2:.4f}")
+```
+
+Distribution of quality, cost and speed percentiles across models.
+
+```python exec
+fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+
+ax[0].hist(df['quality_pct'], bins=20, color='lightblue', edgecolor='black')
+ax[0].set_xlabel('Quality Percentile')
+ax[0].set_ylabel('Count')
+
+ax[1].hist(df['cost_pct'], bins=20, color='lightgreen', edgecolor='black')
+ax[1].set_xlabel('Cost Percentile')
+
+ax[2].hist(df['speed_pct'], bins=20, color='salmon', edgecolor='black')
+ax[2].set_xlabel('Speed Percentile')
+
+plt.tight_layout()
+plt.show()
+```
+
+What happens when we look for the thing?
+
+::: figure
+
+A comparison of quality, cost, and speed metrics across models, showing the percentile ranks of each measure.
+
+```python exec
+plt.figure(figsize=(10, 6))
+
+plt.scatter(df['quality_pct'], df['cost_pct'], label='Cost', alpha=0.6)
+plt.scatter(df['quality_pct'], df['speed_pct'], label='Speed', alpha=0.6)
+
+plt.xlabel('Quality Percentile')
+plt.ylabel('Percentile Rank')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+# Model selection
+
+Many benchmarking systems lack sufficient information to uniquely identify a
+specific model. For example, when a benchmarking report uses the key
+`gpt-3.5-turbo`, it's unclear whether this refers to `gpt-3.5-turbo-0125`,
+`gpt-3.5-turbo-0301`, or another variant. Typically benchmarking providers
+update their reports to point to the most current variant, but this policy and
+its timing is not consistent.
+
+To avoid data corruption, we skip these records when specific identifiers are
+available. This extends to skipping benchmarks from models that are named with a
+`-latest` suffix. Rather than using `codestral-latest`, we use records with
+`codestral-2405`.
+
+Because reconciling between different providers is time
+consuming and brittle, we skip these records and use model identifiers with
+specific identifiers. 
+
+
+# Name normalization
+
+Each provider uses a slightly different naming convention. We normalize these to
+match the format `<model>-<version>-<size>-<task>-<discriminator>-<quantization>`.
+
+For example:
+
+::: table
+
+Examples of model normalization within Stencila
+
+| Original key                               | Normalized key           | Remarks                                                                |
+| ------------------------------------------ | ------------------------ | ---------------------------------------------------------------------- |
+| `anthropic.claude-v2:1`                    | `claude-2`               | Provider and configuration version removed. Version number normalized. |
+| `chatgpt-4o-latest-20241120`               | `gpt-4o-2024-11-20`      | Name and identifier normalized to OpenAI's naming convention           |
+| `claude1`                                  | `claude-1`               | Hyphen added between model name and version                            |
+| `cloudflare/@cf/meta/llama-2-7b-chat-fp16` | `llama-2.7b-chat-fp16`   | Provider removed. Version number normalized.                           |
+| `command-r7b-12-2024`                      | `command-r-7b-12-2024`   | Hyphen added between model name and size                               |
+| `deepseek-v2.5-1210`                       | `deepseek-2.5-1210`      | `v` stripped from version                                              |
+| `deepseekr1`                               | `deepseek-r1`            | Hyphen added to name to allow lexicographic sorting                    |
+| `llama-3-70b-chat-hf`                      | `llama-3-70b-chat-fp16`  | `hf` normalized to `fp16`                                              |
+| `llama-v3p1-8b-instruct`                   | `llama-3.1-8b-instruct`  | `v` stripped from version, period added to version                     |
+| `Mixtral-8x7B-Instruct-v0.1`               | `mixtral-8x7b-instruct`  | Case normalized. Configuration version removed                         |
+| `us.meta.llama3-3-70b-instruct-v1:0`       | `llama-3.3-70b-instruct` | Provider and configuration version removed. Version number normalized. |
+
+:::
+
+While the primary intention of this normalization is to ensure that the model keys are consistent between providers over time,
+it is also possible to decompose the normalized key to infer more information about the model at hand.
+
+::: table
+
+Interpreting Stencila's model keys
+
+| Normalized key                 | Model name    |     Version |  Size |       Task | Discriminator | Quantization |
+| ------------------------------ | ------------- | ----------: | ----: | ---------: | ------------: | -----------: |
+| `claude-1`                     | `claude`      |         `1` |       |            |               |              |
+| `command-r-7b-12-2024`         | `command-r`   |             |  `7b` |            |     `12-2024` |              |
+| `deepseek-r1`                  | `deepseek-r1` |             |       |            |               |              |
+| `gemma-2-9b-it`                | `gemma`       |         `2` |  `9b` |       `it` |               |              |
+| `gpt-4o-2024-11-20`            | `gpt-4o`      |             |       |            |  `2024-11-20` |              |
+| `llama-2-7b-chat-fp16`         | `llama`       |         `2` |  `7b` |     `chat` |               |       `fp16` |
+| `llama-3-70b-chat-hf`          | `llama`       |         `3` | `70b` |     `chat` |               |       `fp16` |
+| `llama-3.1-8b-instruct`        | `llama`       |       `3.1` |  `8b` | `instruct` |               |              |
+| `gemini-1.5-flash-8b-exp-0827` | `gemini`      | `1.5-flash` |  `8b` |            |    `exp-0827` |              |
+
+:::
+
+
+
+The identifier field is typically a date, which we avoid normalizing.
+
+Some providers indicate their model's quantization in the key. Quantization
+describes how model weights are represented within the model. Conventionally,
+models use 32-bit floating point numbers to represent weights. It's possible to
+increase throughput and decrease memory usage by reducing the numerical
+precision of these weights, typically at the expense of quality. A model is said
+to be _quantized_ if that process has been carried out in a published model.
+For example, `fp16` indicates that the model is quantized to half-precision
+floating point numbers and `int8` indicates that the model uses 8-bit integers
+for model weights.
+
+::: table
+
+Quantization schemes for model weights used by Stencila
+
+| Key   | Description                                   |
+| ----- | --------------------------------------------- |
+| bfp16 | bfloat16 ("brain floating point")             |
+| fp16  | 16-bit floating point ("IEEE half-precision") |
+| fp8   | 8-bit floating point  ("8-bit minifloat")     |
+| int8  | 8-bit integers                                |
+| int4  | 4-bit integers                                |
+
+:::
+
+Models with openly-published weights, sometimes referred to as _open weights_ or
+_open source_ models, have more naming diversity. They spawn derivatives,
+through processes called _fine-tuning_ which  from these base models.
+
+Model size. The size of a model is typically indicated by the number of
+parameters that it has. For example, a model with 70 billion parameters will
+typically include `70b` in its name. Smaller variants of models are _distilled_
+from larger models. 
+
+LiteLLM might use the key `meta.llama3-8b-instruct-v1:0`, which we convert to
+`llama-3-8b-instruct`. The original schema is
+`<provider>.<model><model-version>-<size>-<task>-<configuration-version>`. Our
+processing removes the provider and configuration version, and normalizes the
+model name to lowercase and ensures that a hyphen exists between .
+
+
+
