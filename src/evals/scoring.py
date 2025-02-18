@@ -8,6 +8,7 @@ Together these can be used to generate the ideal models, given a weighting.
 # TODO: for now, we ignore *hosts*, that a model can be hosted by one or more
 # platforms. We can add this later.
 
+import decimal
 import os
 from collections import defaultdict
 from collections.abc import Iterable
@@ -55,7 +56,7 @@ class ScoreRecord(BaseModel):
     quality_pct: float | None = None
     quality_unit: str
 
-    cost: float | None
+    cost: decimal.Decimal | None
     cost_rank: int | None = None
     cost_pct: float | None = None
     cost_unit: str | None
@@ -124,7 +125,7 @@ def calculate_percentiles(scores: List[float], invert_scores = False) -> np.ndar
     # lower is better for cost
     # TODO: check whether this is already done earlier
     if invert_scores:
-        obs = 1.0 - obs
+        obs = decimal.Decimal("1.0") - obs
 
     sorted_obs = np.sort(obs)
     positions = np.searchsorted(sorted_obs, obs)

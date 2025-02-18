@@ -3,6 +3,7 @@
 
 from enum import StrEnum
 from pathlib import Path
+from decimal import Decimal
 
 from pydantic import BaseModel
 from tortoise import Model, Tortoise, fields
@@ -33,7 +34,7 @@ class Benchmark(BaseModel):
     context: str = "*"
 
     # The score!
-    score: float
+    score: float | Decimal
 
 
 class BenchmarkResult(BaseModel):

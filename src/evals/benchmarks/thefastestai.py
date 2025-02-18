@@ -1,6 +1,7 @@
 """Speed metrics based on data collected by https://thefastest.ai."""
 
 import asyncio
+from decimal import Decimal
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -9,8 +10,13 @@ from typing import Any, Final
 import httpx
 import pandas as pd
 import polars as pl
+import jiter
 from loguru import logger
+import polars
+import pydantic
+from pydantic_core import from_json
 from pydantic import BaseModel, Field, ValidationError
+import pydantic_core
 
 from evals.benchmarks._benchmark import _Benchmark
 from evals.modelmap import ModelMapper
@@ -89,10 +95,10 @@ class ResultItem(BaseModel):
     model: str
     # Yes, sometimes this is null.
     ttr: float | None
-    ttft: float
-    tps: float
+    tps: Decimal = Field(gt=0.0, title="Tokens per second")
     total_time: float
     # We don't need these, so we can comment them out.
+    # ttft: float
     # num_tokens: int | None = None
     # output: str | None = None
 
@@ -175,13 +181,39 @@ def assemble_frame() -> pl.DataFrame:
     """Score models for all dates since start of dataset to the current date."""
     downloads_dir = get_settings().get_downloads_dir(ORIGIN)
     frames: list[pl.DataFrame] = []
-    for file in downloads_dir.glob("*.json"):
+    for file in sorted(downloads_dir.glob("*.json")):
+        logger.info(f"Processing {file.name}")
+
+        errors = {}
+
+        data = jiter.from_json(file.read_bytes(), float_mode="decimal")
+        valid_records = []
+        for record in data.get("results", []):
+            model = record["model"]
+            if record.get("error") is not None:
+                errors[model] = record["error"]
+                continue
+            # TODO: use something that's more robust than comparing directly against 0.0
+            if record.get("tps", 0.0) == 0.0:
+                logger.debug(f"Skipping zero TPS in {file.name} for {model}")
+                continue
+            valid_records.append(record)
+
+        if len(errors) > 0:
+            logger.debug(f"Errors in {file.name}:\n{errors}")
+
+        data["results"] = valid_records
         try:
-            result = ResultDateRegion.model_validate_json(file.read_bytes())
+            result = ResultDateRegion(**data)
         except ValidationError as e:
             logger.error(f"Error parsing {file.name}: {e}")
             continue
-        logger.info(f"Processing {file.name}, {result.time:%Y-%m-%d}, {result.region}")
+
+        # try:
+        #     result = ResultDateRegion.model_validate_json(file.read_bytes())
+        # except ValidationError as e:
+        #     logger.error(f"Error parsing {file.name}: {e}")
+        #     continue
         frames.append(result.to_frame())
 
     df = pl.concat(frames)
@@ -224,15 +256,25 @@ def all():
 
 class TheFastestAI(_Benchmark):
     def get_benchmarks(self, mm: ModelMapper) -> BenchmarkResult:
-        df = self.load_frame()
-
-        # Get the most recent data
-        max_date = df["date"].max()
-        df = df.filter(pl.col("date") == max_date)
-
-        # Filter for our models
+        df: polars.DataFrame = self.load_frame()
         df = self.map_and_filter_column(df, "model", mm)
-        df = df.group_by("model", "provider").agg(pl.col("tps").median())
-        df = df.rename({"tps": "score", "provider": "context"})
+        df = df.filter(pl.col("tps").is_not_null()).select(["model", "provider", "date", "tps"])
+        df = df.sort("date", "model", descending=True, nulls_last=True)
+
+        logger.debug("Before processing:")
+        logger.debug(df)
+
+        # TODO: use a computationally sensitive technique 
+        # (using a rolling median is computationally wasteful, but
+        # simplifies null handling and models with few data points)
+        df = df.group_by("model", "provider").agg(**{"score": pl.col("tps").rolling_median(
+                window_size=5,
+                min_periods=1,
+            ).first()})
+
+        df = df.filter(pl.col("score").is_not_null()).select(["model", "provider", "score"])
+        df = df.rename({"provider": "context"})
+
+
         scores = [Benchmark.model_validate(dct) for dct in df.iter_rows(named=True)]
         return BenchmarkResult(bm_type=BenchmarkType.SPEED, scores=scores, unit="tps")
