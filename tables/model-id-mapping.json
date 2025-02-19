@@ -683,6 +683,7 @@
   "openrouter/deepseek/deepseek-coder [litellm]": "deepseek-coder",
   "openrouter/deepseek/deepseek-r1 [litellm]": "deepseek-r1",
   "openrouter/fireworks/firellava-13b [litellm]": null,
+  "openrouter/google/gemini-2.0-flash-001 [litellm]": "gemini-2.0-flash-001",
   "openrouter/google/gemini-pro-1.5 [litellm]": "gemini-pro-1.5",
   "openrouter/google/gemini-pro-vision [litellm]": "gemini-pro-vision",
   "openrouter/google/palm-2-chat-bison [litellm]": null,
