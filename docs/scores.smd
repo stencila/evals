@@ -5,19 +5,67 @@ title: 'Exploring the LLM Pareto frontier of quality, cost and speed'
 Stencila Cloud's model router provides you with the "best" model for your input.
 It does this by analyzing the outputs of various benchmarking services to
 produce normalized scores for quality, speed and cost.
+
 This document describes how that's achieved.
+
+```python exec always
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
+
+model_names = df["model"].unique()
+```
+
+::: table
+
+How each model scores (extracted from `all_models_df`).
+
+```python exec auto
+all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
+
+all_models_df[["model", "quality", "speed", "cost"]].dropna().round(2)
+```
+
+:::
+
+::: table
+
+How each model scores (extracted from `df`).
+
+```python exec auto
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+df[["model", "quality", "speed", "cost"]].dropna()
+```
+
+:::
+
+As you can see, the scales for each of the metrics are very different. To allow
+them to be more easily compared, we normalize them to a 0-100 scale by using
+each model's percentile ranking as the basis of comparison.
+
+::: table
+
+How each model scores (normalized) (extracted from `df`).
+
+```python exec auto
+df[["model", "quality_pct", "speed_pct", "cost_pct"]].dropna().round(2)
+```
+
+:::
+
+You may notice that percentiles are not spread between 0 and 100. This is because the
+percentiles are calculated based on the number of models that have a score for that metric,
+but these tables only refer to models that have scores for all three metrics.
 
 ## Data sources
 
 Stencila makes use of publicly-available, open access data sets to evaluate the
 models that are available to its users:
-
-| Metric  | Data source                               | Provider                         |
-| ------- | ----------------------------------------- | -------------------------------- |
-| Quality | Elo rating system                         | Chatbot Arena (previously LMSYS) |
-| Speed   | Throughput, measured as tokens per second | Thefastest.ai                    |
-| Cost    | Publicly-available pricing data           | LiteLLM                          |
-
 
 ::: table
 
@@ -31,28 +79,84 @@ Model scores of each metric.
 
 :::
 
-```python exec
-# setting up
+# Quality
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+Quality scores are derived from the [Chatbot Arena](https://llarena.ai) data by
+LMArena and UC Berkeley Skylab. These scores are then normalized to a 0-100
+scale by taking each model's percentile ranking within the range of the final
+ratings.
 
-df = pd.read_parquet("../data/routing/scoring.parquet")
-all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
-```
+The Chatbot Arena works by creating "battles" that allow human users provide
+prompts to two models, and then assess the model's responses. People can rate
+the responses as a win for one side, both equally good, or neither satisfied the 
+response adequately. These last two options are considered a draw.
 
-```python exec
-df.info()
-```
+The results from all of battles are used to calculate an overall score for
+each model. Models with the highest score are more likely to win future battles,
+even against opponents that they've never met before. The formula to calculate
+the score is described by what is known as an _Elo rating system_.
 
-Model names:
+An _Elo rating system_ gets its name from its creator, Élő Árpád Imre, often
+anglicized as Arpad Elo. It was originally designed to rank chess players, but
+is now frequently used to rate sports teams and competitors in other 1v1
+activities. The system works by assigning a starting numerical rating to each
+player, typically 1000, and then updating that rating based on the outcome of
+each game played. The amount that a player's rating changes after a game depends
+on the difference in ratings between the two players.
 
-```python exec
-model_names = df["model"].unique()
-```
+Unlike chess and other sports though, the Chatbot Arena's scoring does not treat
+recent battles as more important than older ones. In a traditional Elo rating
+system, the score of a player is updated after each game. This has the effect of
+giving weight to more recent results.  That's important because a player's skill
+level changes over time. Large language models on the other hand are fixed once
+they're released. To compensate for that, Chatbot Arena uses a derivative of the Elo
+rating system called the Bradley-Terry model.
+
+Bradley-Terry assigns a rating to each model that is most likely to correspond
+to the results that have actually occurred. 
+
+The results are somewhat susceptible to manipulation. A battle's prompts and
+the evaluations of the responses are a best-effort attempt. The creators of
+the Chatbot Area have done some analysis by comparing their results to other
+datasets (Anthropic HH ([Bai et al., 2022]) and OpenAssistant Conversations
+([Köpf et al., 2023])), and found high correspondence.
+
+ using the 
+service at llarena.ai. 
+
+using an Elo rating system. An Elo rating system
+works by 
+
+> Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli, D., Henighan, T., et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022
+>
+> Köpf, A., Kilcher, Y., von Rütte, D., Anagnostidis, S., Tam, Z.-R., Stevens, K., Barhoum, A., Duc, N. M., Stanley, O., Nagyfi, R., et al. OpenAssistant conversations- democratizing large language model alignment. arXiv preprint arXiv:2304.07327, 2023.
+
+[Bai et al., 2022]: https://arxiv.org/abs/2403.04132
+[Köpf et al., 2023]: https://arxiv.org/abs/2403.07327
 
 # Speed
+
+In Stencila, a model's score is its throughput. This is measured as the time it
+takes to deliver all tokens, divided by the number of tokens in a response. The
+time starts once the first token is received.
+
+To assess throughput, we use the open data provided by `thefastest.ai`
+benchmarking service. The fastest.ai periodically runs tests against providers'
+infrastructure. To calculate the score for each model, we calculate the median
+of the 5 most recent tests per provider and region, then take the median of
+those scores. This provides us with a way to compare the throughput of models
+across different providers.
+
+delivered between the first and last token. This measure is calculated as time
+to first token $-$ total time, divided by the number of tokens in the test.
+
+$$
+a + b = c
+$$
+
+a the median of the last 5 speed tests taken against that model . The speed
+
+The fastest.ai periodically runs tests against providers' infrastructure. To calculate a score for each model.
 
 # Quality
 
@@ -71,6 +175,16 @@ plt.grid(True, alpha=0.3)
 plt.axvline(df['quality'].mean(), color='red', linestyle='--', alpha=0.8)
 plt.tight_layout()
 plt.show()
+```
+
+:::
+
+::: figure
+
+Distribution of the quality metric across all models.
+
+```python exec
+all_models_df.quality.dropna().hist(bins=20, color='steelblue', edgecolor='black')
 ```
 
 :::
@@ -148,24 +262,23 @@ print("Significance levels:", anderson_result.significance_level)
 
 ::: figure
 
-Trade-offs between quality, cost, and speed percentiles across models, with points forming a Pareto frontier surface.
+Three-dimensional scatter plot showing the Pareto frontier of quality, cost, and speed percentiles across models, where points represent different model configurations.
 
 ```python exec
 fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
 
-scatter = ax.scatter(df['quality_pct'],
-                    df['cost_pct'],
+scatter = ax.scatter(df['quality_pct'], 
+                    df['cost_pct'], 
                     df['speed_pct'],
-                    c=df['quality_pct'] + df['cost_pct'] + df['speed_pct'],
+                    c=df['speed_pct'],  # Color by speed for added dimension
                     cmap='viridis')
 
-ax.set_xlabel('Quality %')
-ax.set_ylabel('Cost %')
-ax.set_zlabel('Speed %')
+ax.set_xlabel('Quality Percentile')
+ax.set_ylabel('Cost Percentile')
+ax.set_zlabel('Speed Percentile')
 
-plt.colorbar(scatter)
-plt.tight_layout()
+plt.colorbar(scatter, label='Speed Percentile')
 plt.show()
 ```
 
@@ -281,8 +394,7 @@ available. This extends to skipping benchmarks from models that are named with a
 
 Because reconciling between different providers is time
 consuming and brittle, we skip these records and use model identifiers with
-specific identifiers. 
-
+specific identifiers.
 
 # Name normalization
 
@@ -318,21 +430,19 @@ it is also possible to decompose the normalized key to infer more information ab
 
 Interpreting Stencila's model keys
 
-| Normalized key                 | Model name    |     Version |  Size |       Task | Discriminator | Quantization |
-| ------------------------------ | ------------- | ----------: | ----: | ---------: | ------------: | -----------: |
-| `claude-1`                     | `claude`      |         `1` |       |            |               |              |
-| `command-r-7b-12-2024`         | `command-r`   |             |  `7b` |            |     `12-2024` |              |
+| Normalized key                 | Model name    | Version     | Size  | Task       | Discriminator | Quantization |
+| ------------------------------ | ------------- | ----------- | ----- | ---------- | ------------- | ------------ |
+| `claude-1`                     | `claude`      | `1`         |       |            |               |              |
+| `command-r-7b-12-2024`         | `command-r`   |             | `7b`  |            | `12-2024`     |              |
 | `deepseek-r1`                  | `deepseek-r1` |             |       |            |               |              |
-| `gemma-2-9b-it`                | `gemma`       |         `2` |  `9b` |       `it` |               |              |
-| `gpt-4o-2024-11-20`            | `gpt-4o`      |             |       |            |  `2024-11-20` |              |
-| `llama-2-7b-chat-fp16`         | `llama`       |         `2` |  `7b` |     `chat` |               |       `fp16` |
-| `llama-3-70b-chat-hf`          | `llama`       |         `3` | `70b` |     `chat` |               |       `fp16` |
-| `llama-3.1-8b-instruct`        | `llama`       |       `3.1` |  `8b` | `instruct` |               |              |
-| `gemini-1.5-flash-8b-exp-0827` | `gemini`      | `1.5-flash` |  `8b` |            |    `exp-0827` |              |
+| `gemma-2-9b-it`                | `gemma`       | `2`         | `9b`  | `it`       |               |              |
+| `gpt-4o-2024-11-20`            | `gpt-4o`      |             |       |            | `2024-11-20`  |              |
+| `llama-2-7b-chat-fp16`         | `llama`       | `2`         | `7b`  | `chat`     |               | `fp16`       |
+| `llama-3-70b-chat-hf`          | `llama`       | `3`         | `70b` | `chat`     |               | `fp16`       |
+| `llama-3.1-8b-instruct`        | `llama`       | `3.1`       | `8b`  | `instruct` |               |              |
+| `gemini-1.5-flash-8b-exp-0827` | `gemini`      | `1.5-flash` | `8b`  |            | `exp-0827`    |              |
 
 :::
-
-
 
 The identifier field is typically a date, which we avoid normalizing.
 
@@ -367,13 +477,10 @@ through processes called _fine-tuning_ which  from these base models.
 Model size. The size of a model is typically indicated by the number of
 parameters that it has. For example, a model with 70 billion parameters will
 typically include `70b` in its name. Smaller variants of models are _distilled_
-from larger models. 
+from larger models.
 
 LiteLLM might use the key `meta.llama3-8b-instruct-v1:0`, which we convert to
 `llama-3-8b-instruct`. The original schema is
 `<provider>.<model><model-version>-<size>-<task>-<configuration-version>`. Our
 processing removes the provider and configuration version, and normalizes the
 model name to lowercase and ensures that a hyphen exists between .
-
-
-
