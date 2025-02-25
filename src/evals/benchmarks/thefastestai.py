@@ -200,7 +200,8 @@ def assemble_frame() -> pl.DataFrame:
             valid_records.append(record)
 
         if len(errors) > 0:
-            logger.debug(f"Errors in {file.name}:\n{errors}")
+            logger.debug(f"Errors in {file.name}:")
+            logger.trace(errors)
 
         data["results"] = valid_records
         try:
