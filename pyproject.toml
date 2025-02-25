@@ -28,6 +28,7 @@ dependencies = [
   "ruamel-yaml>=0.18.6",
   "seaborn>=0.13.2",
   "tortoise-orm>=0.21.7",
+  "jiter>=0.8.2",
 ]
 
 [dependency-groups]
@@ -159,3 +160,6 @@ line-ending = "lf"
 # https://docs.astral.sh/ruff/formatter/#docstring-formatting
 docstring-code-format = true
 docstring-code-line-length = 88
+
+[tool.uv.workspace]
+members = ["docs"]

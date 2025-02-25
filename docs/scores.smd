@@ -2,22 +2,366 @@
 title: 'Exploring the LLM Pareto frontier of quality, cost and speed'
 ---
 
+# Introduction
+
 Stencila Cloud's model router provides you with the "best" model for your input.
 It does this by analyzing the outputs of various benchmarking services to
 produce normalized scores for quality, speed and cost.
 
-This document describes how that's achieved.
+This document describes what that means and how that's achieved.
 
 ```python exec always
-
-import matplotlib.pyplot as plt
-import numpy as np
+# generating a list of model names
 import pandas as pd
 
 df = pd.read_parquet("../data/routing/scoring.parquet")
-all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
 
 model_names = df["model"].unique()
+model_names
+```
+
+::: table 
+
+Large languages models' performance in cost, quality and speed
+
+```python exec auto
+import numpy as np
+import pandas as pd
+from decimal import Decimal
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+df['cost'] = df['cost'] * Decimal('1000000.0')
+df['cost'] = df['cost'].astype(np.float64).round(2)
+df['quality'] = df['quality'].astype(np.float64).round(2)
+df['speed'] = df['speed'].astype(np.float64).round(2)
+
+pd.DataFrame({
+    'Model': df['model'],
+    'Cost ($ per million tokens)': df['cost'],
+    'Quality (Elo ranking)': df['quality'],
+    'Speed (tokens per second)': df['speed'],
+})
+```
+
+:::
+
+Because each metric uses such different ranges, we normalize them to percentile rankings.
+
+::: table 
+
+Large languages models' (normalized) performance in cost, quality and speed
+
+```python exec auto
+import numpy as np
+import pandas as pd
+from decimal import Decimal
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+df['quality_pct'] = df['quality'].rank() / len(df['quality'].dropna())
+df['cost_pct'] = df['cost'].rank() / len(df['cost'].dropna())
+df['speed_pct'] = df['speed'].rank() / len(df['speed'].dropna())
+
+pd.DataFrame({
+    'Model': df['model'],
+    'Cost (percentile ranking)': df['cost_pct'].round(1),
+    'Quality (percentile ranking)': df['quality_pct'].round(1),
+    'Speed (percentile ranking)': df['speed_pct'].round(1),
+})
+```
+
+:::
+
+Now that we have normalized data, it's possible to see how models compare against all three metrics.
+
+One way to do this is to compare variables against a common one. For example, we generally expect 
+that model performance correlates with its cost. Is that accurate?
+
+::: figure 
+
+Quality vs cost 
+
+``` python exec auto
+import pandas as pd
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+df['quality_pct'] = df['quality'].rank() / len(df['quality'].dropna())
+df['cost_pct'] = 1.0 - (df['cost'].rank() / len(df['cost'].dropna()))
+df['speed_pct'] = df['speed'].rank() / len(df['speed'].dropna())
+
+df = pd.DataFrame({
+    'Model': df['model'],
+    'Cost (percentile ranking)': df['cost_pct'].round(1),
+    'Quality (percentile ranking)': df['quality_pct'].round(1),
+    'Speed (percentile ranking)': df['speed_pct'].round(1),
+})
+
+ax = df.plot(x='Cost (percentile ranking)', y='Quality (percentile ranking)', kind="scatter")
+# TODO: better colours
+# TODO: label outliers
+# TODO: label top-left quadrant: cheap and good
+# TODO: label top-right quadrant: expensive and good
+# TODO: label bottom-left quadrant: cheap and poor
+# TODO: label bottom-right quadrant: expensive and poor
+
+```
+
+:::
+
+While there's a general corelation between cost and quality, you can see that there are outliers.
+A few models are both cheap and good.
+
+::: figure 
+
+Speed vs cost 
+
+``` python exec auto
+import pandas as pd
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+df['quality_pct'] = df['quality'].rank() / len(df['quality'].dropna())
+df['cost_pct'] = 1.0 - (df['cost'].rank() / len(df['cost'].dropna()))
+df['speed_pct'] = df['speed'].rank() / len(df['speed'].dropna())
+
+df = pd.DataFrame({
+    'Model': df['model'],
+    'Cost (percentile ranking)': df['cost_pct'].round(1),
+    'Quality (percentile ranking)': df['quality_pct'].round(1),
+    'Speed (percentile ranking)': df['speed_pct'].round(1),
+})
+
+df.plot(x='Cost (percentile ranking)', y='Speed (percentile ranking)', kind="scatter")
+```
+
+:::
+
+We can also compare all three variables together. 
+
+::: figure
+
+Comparing the speed, quality and cost of large language models
+
+```python exec auto
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from decimal import Decimal
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.patheffects as path_effects
+
+# Function to find Pareto frontier points
+def find_pareto_frontier_3d(points, maximize_x=True, maximize_y=False, maximize_z=True):
+    """Calculate the 3D Pareto frontier given a set of points and optimization directions
+
+    For each dimension, True means higher values are better (maximize),
+    False means lower values are better (minimize).
+    """
+    pareto_indices = []
+    n = len(points)
+
+    for i in range(n):
+        dominated = False
+        current = points[i]
+
+        for j in range(n):
+            if i == j:
+                continue
+
+            other = points[j]
+
+            # For quality (x): higher is better if maximize_x is True
+            x_better_or_equal = (other[0] >= current[0]) if maximize_x else (other[0] <= current[0])
+            # For cost (y): lower is better if maximize_y is False
+            y_better_or_equal = (other[1] >= current[1]) if maximize_y else (other[1] <= current[1])
+            # For speed (z): higher is better if maximize_z is True
+            z_better_or_equal = (other[2] >= current[2]) if maximize_z else (other[2] <= current[2])
+
+            # Check if at least one dimension is strictly better
+            x_strictly_better = (other[0] > current[0]) if maximize_x else (other[0] < current[0])
+            y_strictly_better = (other[1] > current[1]) if maximize_y else (other[1] < current[1])
+            z_strictly_better = (other[2] > current[2]) if maximize_z else (other[2] < current[2])
+
+            if (x_better_or_equal and y_better_or_equal and z_better_or_equal and
+                (x_strictly_better or y_strictly_better or z_strictly_better)):
+                dominated = True
+                break
+
+        if not dominated:
+            pareto_indices.append(i)
+
+    return pareto_indices
+
+# Read the CSV file
+df = pd.read_parquet("../data/routing/scoring.parquet")
+df['cost'] = df['cost'] * Decimal('1000000.0') # Multiply by 1M to avoid precision issues
+df['cost'] = df['cost'].astype(np.float64) # Convert to a double because json hates Decimal
+df['quality_pct'] = df['quality'].rank() / len(df['quality'].dropna())
+df['cost_pct'] = df['cost'].rank() / len(df['cost'].dropna())
+df['speed_pct'] = df['speed'].rank() / len(df['speed'].dropna())
+
+# Extract the relevant columns
+quality = df['quality_pct'].values
+cost = df['cost_pct'].values
+speed = df['speed_pct'].values
+models = df['model'].values
+
+# confirm data isn't corrupt
+assert all(c > 0.0 for c in cost)
+
+for vals in zip(models, quality, speed, cost, strict=True):
+    print(vals)
+
+# Get units from the data
+quality_unit = 'Elo rating'
+cost_unit = "$/Mtok"
+speed_unit = 'token/second'
+
+# Prepare the data for 3D plotting
+points = list(zip(quality, cost, speed, strict=True))
+colors = plt.cm.viridis(np.linspace(0, 1, len(points)))
+
+# Find the Pareto frontier points
+pareto_indices = find_pareto_frontier_3d(points, maximize_x=True, maximize_y=True, maximize_z=True)
+pareto_points = [points[i] for i in pareto_indices]
+pareto_models = [models[i] for i in pareto_indices]
+
+# Create a 3D plot
+fig = plt.figure(figsize=(14, 12))  # Increased figure size
+ax = fig.add_subplot(111, projection='3d')
+
+# Set view limits
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 100)
+ax.set_zlim(0, 100)
+
+# Plot each point
+color = '#10b981'
+linestyle = 'dashed' # (0, (1, 10)) # loosely 'dotted'
+
+# First, add projection lines
+for i, (model_quality, model_cost, model_speed) in enumerate(points):
+    # ax.scatter(model_quality, model_speed, model_cost, color=color, s=90, alpha=1.0, edgecolors='black')
+
+    # draw dots on the "walls" of the plots to indicate where points lie
+
+    ax.scatter(0, model_speed, model_cost, color=color, s=5, marker='o', alpha=0.47) 
+    ax.scatter(model_quality, 0, model_cost, color=color, s=5, marker='o', alpha=0.47)
+    ax.scatter(model_quality, model_speed, 0, color=color, s=5, marker='o', alpha=0.47)
+
+    # draw lines between points and the "walls"
+    ax.plot([0, model_quality], [model_speed, model_speed], [model_cost, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.35, linewidth=1)
+    ax.plot([model_quality, model_quality], [0, model_speed], [model_cost, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.35, linewidth=1)
+    
+    ax.plot([model_quality, model_quality], [model_speed, model_speed], [0, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.35, linewidth=1)
+
+# Then add the points to the plot
+#for i, (model_quality, model_cost, model_speed) in enumerate(points):
+#    ax.scatter(model_quality, model_speed, model_cost, color=color, s=60, alpha=0.7, edgecolors='black')
+
+
+# Highlight the Pareto frontier points
+color = '#2468ef'
+linestyle = 'dashed'
+
+for model_quality, model_cost, model_speed) in pareto_points:
+    #ax.scatter(model_quality, model_speed, model_cost, color=color, s=90, alpha=1.0, edgecolors='black')
+    ax.plot([0, model_quality], [model_speed, model_speed], [model_cost, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.5, linewidth=2)
+    ax.scatter(0, model_speed, model_cost, color=color, s=10, marker='o', alpha=0.7)
+    ax.plot([model_quality, model_quality], [0, model_speed], [model_cost, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.5, linewidth=2)
+    ax.scatter(model_quality, 0, model_cost, color=color, s=10, marker='o', alpha=0.7)
+    ax.plot([model_quality, model_quality], [model_speed, model_speed], [0, model_cost], 
+            linestyle=linestyle, color=color, alpha=0.5, linewidth=2)
+    ax.scatter(model_quality, model_speed, 0, color=color, s=10, marker='o', alpha=0.7)
+
+# Set labels and title
+ax.set_xlabel(f'Quality (percentile)', fontsize=12)
+ax.set_ylabel(f'Speed (percentile)', fontsize=12)
+ax.set_zlabel(f'Cost (percentile)', fontsize=12)
+ax.set_title('3D Scatterplot of Model Performance with Pareto Frontier', fontsize=16)
+
+ax.view_init(elev=25, azim=50)  # Modified view angle
+
+# give each model a label
+for i, (model_quality, model_cost, model_speed) in enumerate(points):
+    model_name = models[i]
+    if model_name in pareto_models:
+        continue
+    txt = ax.text(model_quality, model_speed, model_cost, models[i], 
+            fontsize=8, color='black', 
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='#ccc', boxstyle='round,pad=0.3'),
+            zorder=5)
+    txt.set_path_effects([path_effects.withStroke(linewidth=3, foreground='white')])
+
+# use bolder style for pareto-optimal models
+for i, (model_quality, model_cost, model_speed) in enumerate(pareto_points):
+    txt = ax.text(model_quality, model_speed, model_cost, pareto_models[i], 
+            fontsize=10, weight='bold', color='black', 
+            bbox=dict(facecolor='white', alpha=0.95, edgecolor='black', boxstyle='round,pad=0.3', zorder=14),
+            zorder=15)
+    txt.set_path_effects([path_effects.withStroke(linewidth=3, foreground='white')])
+
+plt.tight_layout()
+# plt.savefig('pareto_frontier_3d_improved.png', dpi=300, bbox_inches='tight')
+
+
+# # Print information about Pareto-optimal models
+# print("\nPareto Frontier Models:")
+# for i, model in enumerate(pareto_models):
+#     model_quality, model_cost, model_speed = pareto_points[i]
+#     print(f"Model: {model}, Quality: {model_quality:.2f}, Cost (×10⁶): {model_cost:.2f}, Speed: {model_speed:.2f}")
+# 
+# # Calculate correlations to understand relationships
+# data = np.vstack([quality, cost, speed])
+# corrcoef = np.corrcoef(data)
+# 
+# print("\nCorrelation Matrix:")
+# print("              Quality      Cost      Speed")
+# print(f"Quality     {corrcoef[0,0]:.4f}    {corrcoef[0,1]:.4f}    {corrcoef[0,2]:.4f}")
+# print(f"Cost        {corrcoef[1,0]:.4f}    {corrcoef[1,1]:.4f}    {corrcoef[1,2]:.4f}")
+# print(f"Speed       {corrcoef[2,0]:.4f}    {corrcoef[2,1]:.4f}    {correlation_matrix[2,2]:.4f}")
+
+plt.show()
+```
+
+:::
+
+
+```python exec always
+# calculating the pareto frontier
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+def calc_3d_pareto_frontier(points, maximize_x=True, maximize_y=True, maximize_z=True):
+    points = np.array(points)
+    signs = np.array([1 if maximize_x else -1, 
+                      1 if maximize_y else -1, 
+                      1 if maximize_z else -1])
+    modified_points = points * signs
+    
+    is_efficient = np.ones(len(modified_points), dtype=bool)
+    for i, point in enumerate(modified_points):
+        if is_efficient[i]:
+            is_efficient[is_efficient] = np.any(
+                modified_points[is_efficient] > point, axis=1
+            ) | np.all(modified_points[is_efficient] == point, axis=1)
+    
+    return points[is_efficient]
+
+df = pd.read_parquet("../data/routing/scoring.parquet")
+
+
+model_names = df["model"].unique()
+model_names
 ```
 
 ::: table
@@ -27,7 +371,7 @@ How each model scores (extracted from `all_models_df`).
 ```python exec auto
 all_models_df = pd.read_parquet("../data/routing/scoring-with-incomplete.parquet")
 
-all_models_df[["model", "quality", "speed", "cost"]].dropna().round(2)
+all_models_df[["model", "quality", "speed", "cost"]]
 ```
 
 :::
@@ -88,7 +432,7 @@ ratings.
 
 The Chatbot Arena works by creating "battles" that allow human users provide
 prompts to two models, and then assess the model's responses. People can rate
-the responses as a win for one side, both equally good, or neither satisfied the 
+the responses as a win for one side, both equally good, or neither satisfied the
 response adequately. These last two options are considered a draw.
 
 The results from all of battles are used to calculate an overall score for
@@ -113,26 +457,23 @@ they're released. To compensate for that, Chatbot Arena uses a derivative of the
 rating system called the Bradley-Terry model.
 
 Bradley-Terry assigns a rating to each model that is most likely to correspond
-to the results that have actually occurred. 
+to the results that have actually occurred.
 
 The results are somewhat susceptible to manipulation. A battle's prompts and
 the evaluations of the responses are a best-effort attempt. The creators of
 the Chatbot Area have done some analysis by comparing their results to other
-datasets (Anthropic HH ([Bai et al., 2022]) and OpenAssistant Conversations
-([Köpf et al., 2023])), and found high correspondence.
+datasets (Anthropic HH () and OpenAssistant Conversations
+()), and found high correspondence.
 
- using the 
-service at llarena.ai. 
+using the
+service at llarena.ai.
 
 using an Elo rating system. An Elo rating system
-works by 
+works by
 
 > Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli, D., Henighan, T., et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022
->
+> 
 > Köpf, A., Kilcher, Y., von Rütte, D., Anagnostidis, S., Tam, Z.-R., Stevens, K., Barhoum, A., Duc, N. M., Stanley, O., Nagyfi, R., et al. OpenAssistant conversations- democratizing large language model alignment. arXiv preprint arXiv:2304.07327, 2023.
-
-[Bai et al., 2022]: https://arxiv.org/abs/2403.04132
-[Köpf et al., 2023]: https://arxiv.org/abs/2403.07327
 
 # Speed
 
@@ -164,7 +505,7 @@ Quality scores are fairly well balanced, as shown in the histogram below.
 
 ::: figure
 
-Distribution of quality scores across models, showing the spread and central tendency of model performance.
+Distribution of quality scores across models as a histogram, showing the spread and central tendency of model performance.
 
 ```python exec
 plt.figure(figsize=(10, 6))
@@ -173,6 +514,26 @@ plt.xlabel('Quality Score')
 plt.ylabel('Number of Models')
 plt.grid(True, alpha=0.3)
 plt.axvline(df['quality'].mean(), color='red', linestyle='--', alpha=0.8)
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+In the following plot, quality scores are normalized.
+
+::: figure
+
+Quality vs Cost
+
+```python exec
+plt.figure(figsize=(10, 6))
+
+plt.scatter(df['quality_pct'], df['cost_pct'], color='steelblue')
+#plt.hist(df['quality'], bins=14, color='steelblue', edgecolor='black')
+plt.xlabel('Quality Score')
+plt.ylabel('Cost Score')
+plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 ```

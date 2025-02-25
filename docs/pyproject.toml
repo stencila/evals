@@ -5,7 +5,18 @@ description = "Describing how Stencila evaluates Large Language Models"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
+    "adjusttext>=1.3.0",
     "matplotlib>=3.9.2",
     "pandas>=2.2.3",
+    "pyarrow>=18.0.0",
     "scipy>=1.15.1",
+    "tornado>=6.4.2",
 ]
+
+[tool.ruff.lint]
+ignore = [
+    "B018", # useless expr (needed by Stencila Markdown to return val at the end of a block)
+]
+
+[tool.pyright]
+
